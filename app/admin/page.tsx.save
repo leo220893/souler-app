@@ -1,0 +1,294 @@
+"use client";
+
+import { useState } from "react";
+
+export default function AdminPage() {
+  const [pin, setPin] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function login() {
+    setMsg(null);
+    setLoading(true);
+    try {
+      const res = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) throw new Error(data?.error || "PIN incorrecto");
+
+      localStorage.setItem("adminToken", data.token);
+      setMsg("✅ Login correcto. (Token guardado)");
+      setPin("");
+    } catch (e: any) {
+      setMsg(`❌ ${e?.message || "Error"}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main className="min-h-screen flex items-center justify-center bg-gray-100 p-6">
+      <div className="bg-white p-6 rounded-2xl shadow space-y-4 w-full max-w-sm">
+        <h1 className="text-xl font-bold text-center">Souler · Admin</h1>
+
+        <input
+          type="password"
+          placeholder="PIN"
+          value={pin}
+          onChange={(e) => setPin(e.target.value)}
+          className="border w-full px-3 py-2 rounded-xl"
+          inputMode="numeric"
+        />
+
+        <button
+          onClick={login}
+          disabled={loading}
+          className="bg-black text-white w-full py-2 rounded-xl disabled:opacity-60"
+        >
+          Entrar
+        </button>
+
+        {msg && <div className="text-center text-sm font-medium">{msg}</div>}
+
+        <div className="text-xs text-gray-500 text-center">
+          Tip: el token queda guardado en el navegador (localStorage).
+        </div>
+      </div>
+    </main>
+  );
+}"use client";
+
+import { useEffect, useState } from "react";
+
+export default function AdminPage() {
+  const [pin, setPin] = useState("");
+  const [token, setToken] = useState<string | null>(null);
+  const [reservas, setReservas] = useState<any[]>([]);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("adminToken");
+    if (saved) {
+      setToken(saved);
+      loadReservations(saved);
+    }
+  }, []);
+
+  async function login() {
+    const res = await fetch("/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      setMsg("PIN incorrecto");
+      return;
+    }
+
+    localStorage.setItem("adminToken", data.token);
+    setToken(data.token);
+    loadReservations(data.token);
+  }
+
+  async function loadReservations(tok: string) {
+    const res = await fetch("/api/admin/reservations", {
+      headers: {
+        Authorization: `Bearer ${tok}`,
+      },
+    });
+
+    const data = await res.json();
+    setReservas(data);
+  }
+
+  async function cancel(id: string) {
+    await fetch("/api/admin/cancel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ id }),
+    });
+
+    loadReservations(token!);
+  }
+
+  if (!token) {
+    return (
+      <main className="min-h-screen flex items-center justify-center">
+        <div className="bg-white p-6 rounded-xl shadow space-y-4">
+          <h1 className="text-xl font-bold">Souler Admin</h1>
+
+          <input
+            placeholder="PIN"
+            type="password"
+            value={pin}
+            onChange={(e) => setPin(e.target.value)}
+            className="border px-3 py-2 rounded w-full"
+          />
+
+          <button
+            onClick={login}
+            className="bg-black text-white w-full py-2 rounded"
+          >
+            Entrar
+          </button>
+
+          {msg && <p>{msg}</p>}
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="p-6">
+      <h1 className="text-2xl font-bold mb-4">
+        Agenda Souler
+      </h1>
+
+      {reservas.map((r) => (
+        <div
+          key={r.id}
+          className="border p-3 rounded mb-2 flex justify-between"
+        >
+          <div>
+            <b>{r.name}</b> — Cancha {r.court}
+            <br />
+            {r.date} {r.time}
+          </div>
+
+          <button
+            onClick={() => cancel(r.id)}
+            className="bg-red-500 text-white px-3 rounded"
+          >
+            Cancelar
+          </button>
+        </div>
+      ))}
+    </main>
+  );
+}"use client";
+
+import { useEffect, useState } from "react";
+
+export default function AdminPage() {
+  const [pin, setPin] = useState("");
+  const [token, setToken] = useState<string | null>(null);
+  const [reservas, setReservas] = useState<any[]>([]);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("adminToken");
+    if (saved) {
+      setToken(saved);
+      loadReservations(saved);
+    }
+  }, []);
+
+  async function login() {
+    const res = await fetch("/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      setMsg("PIN incorrecto");
+      return;
+    }
+
+    localStorage.setItem("adminToken", data.token);
+    setToken(data.token);
+    loadReservations(data.token);
+  }
+
+  async function loadReservations(tok: string) {
+    const res = await fetch("/api/admin/reservations", {
+      headers: {
+        Authorization: `Bearer ${tok}`,
+      },
+    });
+
+    const data = await res.json();
+    setReservas(data);
+  }
+
+  async function cancel(id: string) {
+    await fetch("/api/admin/cancel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ id }),
+    });
+
+    loadReservations(token!);
+  }
+
+  if (!token) {
+    return (
+      <main className="min-h-screen flex items-center justify-center">
+        <div className="bg-white p-6 rounded-xl shadow space-y-4">
+          <h1 className="text-xl font-bold">Souler Admin</h1>
+
+          <input
+            placeholder="PIN"
+            type="password"
+            value={pin}
+            onChange={(e) => setPin(e.target.value)}
+            className="border px-3 py-2 rounded w-full"
+          />
+
+          <button
+            onClick={login}
+            className="bg-black text-white w-full py-2 rounded"
+          >
+            Entrar
+          </button>
+
+          {msg && <p>{msg}</p>}
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="p-6">
+      <h1 className="text-2xl font-bold mb-4">
+        Agenda Souler
+      </h1>
+
+      {reservas.map((r) => (
+        <div
+          key={r.id}
+          className="border p-3 rounded mb-2 flex justify-between"
+        >
+          <div>
+            <b>{r.name}</b> — Cancha {r.court}
+            <br />
+            {r.date} {r.time}
+          </div>
+
+          <button
+            onClick={() => cancel(r.id)}
+            className="bg-red-500 text-white px-3 rounded"
+          >
+            Cancelar
+          </button>
+        </div>
+      ))}
+    </main>
+  );
+}
