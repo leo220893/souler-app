@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 type CourtId = "c1" | "c2" | "c3" | "c4" | "s1";
-type Status = "confirmed" | "cancelled";
+type DurationMin = 60 | 120;
 
 type Reservation = {
   id: string;
@@ -11,11 +11,11 @@ type Reservation = {
   courtId: CourtId;
   date: string; // YYYY-MM-DD
   startHour: number;
-  durationMin: 60 | 120;
+  durationMin: DurationMin;
   customerName: string;
   customerPhone: string;
   notes?: string;
-  status?: Status;
+  status?: "confirmed" | "cancelled";
   source?: "web" | "admin";
   createdAt?: any;
   cancelledAt?: any;
@@ -23,147 +23,126 @@ type Reservation = {
 
 const VENUE_ID = "souler";
 
+const COURTS: Array<{
+  id: CourtId;
+  label: string;
+  kind: "doble" | "single";
+}> = [
+  { id: "c1", label: "Cancha 1 (Doble)", kind: "doble" },
+  { id: "c2", label: "Cancha 2 (Doble)", kind: "doble" },
+  { id: "c3", label: "Cancha 3 (Doble)", kind: "doble" },
+  { id: "c4", label: "Cancha 4 (Doble)", kind: "doble" },
+  { id: "s1", label: "Cancha Single", kind: "single" },
+];
+
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
 
-function formatHour(h: number) {
-  return `${pad2(h)}:00`;
-}
-
-function formatRange(startHour: number, durationMin: number) {
-  const end = startHour + Math.floor(durationMin / 60);
-  return `${formatHour(startHour)} – ${formatHour(end)}`;
-}
-
-function todayAR(): string {
-  // Fecha local AR para input date (YYYY-MM-DD)
-  const d = new Date();
-  const y = new Intl.DateTimeFormat("en-CA", {
+function todayBA(): string {
+  // Fecha en America/Argentina/Buenos_Aires
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Argentina/Buenos_Aires",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(d);
-  return y;
+  }).formatToParts(now);
+
+  const y = parts.find((p) => p.type === "year")?.value ?? "2026";
+  const m = parts.find((p) => p.type === "month")?.value ?? "01";
+  const d = parts.find((p) => p.type === "day")?.value ?? "01";
+  return `${y}-${m}-${d}`;
 }
 
-/**
- * Normaliza teléfonos AR para WhatsApp.
- * - saca todo lo que no sea dígito
- * - si empieza con 0 lo quita
- * - si empieza con 15 lo quita (formato viejo “15xxxx”)
- * - si no empieza con 54, lo agrega (Argentina)
- *
- * Devuelve E.164 sin +: 54XXXXXXXXXX
- */
-function normalizePhoneForWhatsApp(raw: string): string {
-  let digits = (raw || "").replace(/\D+/g, "");
+function getScheduleForDate(dateStr: string) {
+  // 0=domingo ... 6=sábado. Forzamos -03:00 para evitar corrimientos.
+  const d = new Date(`${dateStr}T00:00:00-03:00`);
+  const day = d.getDay();
 
-  if (digits.startsWith("0")) digits = digits.slice(1);
-  if (digits.startsWith("15")) digits = digits.slice(2);
+  // Lun a Vie: 08:00 a 00:00
+  if (day >= 1 && day <= 5) return { openHour: 8, closeHour: 24 };
 
-  if (!digits.startsWith("54")) {
-    digits = `54${digits}`;
-  }
+  // Sáb: 08:00 a 21:00
+  if (day === 6) return { openHour: 8, closeHour: 21 };
 
-  return digits;
+  // Dom: 16:00 a 22:00
+  return { openHour: 16, closeHour: 22 };
 }
 
-function whatsappLink(rawPhone: string) {
-  const phone = normalizePhoneForWhatsApp(rawPhone);
-  // wa.me funciona en desktop y móvil (en desktop suele abrir WhatsApp Web)
-  return `https://wa.me/${phone}`;
+function buildHours(dateStr: string) {
+  const { openHour, closeHour } = getScheduleForDate(dateStr);
+  const hours: number[] = [];
+  for (let h = openHour; h < closeHour; h++) hours.push(h);
+  return hours;
 }
 
-function courtLabel(courtId: CourtId) {
-  if (courtId === "s1") return "Single";
-  return `Doble ${courtId.toUpperCase()}`;
+function toWhatsAppLink(phoneRaw: string) {
+  const digits = (phoneRaw || "").replace(/[^\d]/g, "");
+  // Argentina: si ya viene con 54 o 549, lo dejamos.
+  // Si viene local (ej: 1125073184), lo mandamos tal cual a wa.me (WhatsApp suele entenderlo).
+  return `https://wa.me/${digits}`;
 }
 
-function courtPillClass(courtId: CourtId) {
-  // colores distintos: dobles vs single
-  if (courtId === "s1") {
-    return "bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-400/30";
-  }
-  return "bg-sky-500/15 text-sky-200 ring-1 ring-sky-400/30";
-}
-
-function cardByStatus(status?: Status) {
-  if (status === "cancelled") {
-    return "bg-white/5 ring-1 ring-white/10 opacity-70";
-  }
-  return "bg-white/10 ring-1 ring-white/15 hover:ring-white/25";
-}
-
-function Modal({
-  open,
-  onClose,
-  title,
-  children,
-}: {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  children: React.ReactNode;
-}) {
-  if (!open) return null;
-
-  return (
-    <div className="fixed inset-0 z-50">
-      {/* overlay */}
-      <div
-        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
-        onClick={onClose}
-      />
-      {/* content */}
-      <div className="absolute inset-0 flex items-center justify-center p-4">
-        <div className="w-full max-w-xl rounded-2xl bg-zinc-950 ring-1 ring-white/15 shadow-2xl overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
-            <div className="text-white font-semibold">{title}</div>
-            <button
-              onClick={onClose}
-              className="rounded-lg px-3 py-1.5 text-sm bg-white/10 hover:bg-white/15 text-white"
-            >
-              Cerrar
-            </button>
-          </div>
-          <div className="p-5">{children}</div>
-        </div>
-      </div>
-    </div>
-  );
+function classNames(...xs: Array<string | false | undefined | null>) {
+  return xs.filter(Boolean).join(" ");
 }
 
 export default function AdminPage() {
   const [pin, setPin] = useState("");
-  const [token, setToken] = useState<string | null>(null);
-  const [loginError, setLoginError] = useState<string | null>(null);
+  const [token, setToken] = useState<string>("");
+  const [authError, setAuthError] = useState<string>("");
 
-  const [date, setDate] = useState<string>(todayAR());
+  const [date, setDate] = useState<string>(todayBA());
+  const hours = useMemo(() => buildHours(date), [date]);
+
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
   const [reservations, setReservations] = useState<Reservation[]>([]);
-  const [includeCancelled, setIncludeCancelled] = useState(false);
+  const [fetchError, setFetchError] = useState<string>("");
 
-  const [selected, setSelected] = useState<Reservation | null>(null);
-  const [cancelBusyId, setCancelBusyId] = useState<string | null>(null);
+  // Modal state
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalCourt, setModalCourt] = useState<CourtId | null>(null);
+  const [modalHour, setModalHour] = useState<number | null>(null);
 
-  // estilo "deportivo" similar: fondo + textura
-  const bg = useMemo(
-    () => ({
-      background:
-        "radial-gradient(1000px 600px at 10% 0%, rgba(56,189,248,.25), transparent 60%)," +
-        "radial-gradient(900px 600px at 100% 20%, rgba(16,185,129,.22), transparent 60%)," +
-        "radial-gradient(900px 700px at 40% 100%, rgba(244,63,94,.18), transparent 60%)," +
-        "linear-gradient(to bottom, rgba(0,0,0,.9), rgba(0,0,0,.95))",
-    }),
-    []
-  );
+  // Crear desde modal (opcional)
+  const [createName, setCreateName] = useState("");
+  const [createPhone, setCreatePhone] = useState("");
+  const [createNotes, setCreateNotes] = useState("");
+  const [createDuration, setCreateDuration] = useState<DurationMin>(60);
+
+  const [actionMsg, setActionMsg] = useState<string>("");
+
+  // Persist token
+  useEffect(() => {
+    const t = localStorage.getItem("souler_admin_token") || "";
+    if (t) setToken(t);
+  }, []);
+
+  useEffect(() => {
+    if (token) localStorage.setItem("souler_admin_token", token);
+  }, [token]);
+
+  const reservationByCourtHour = useMemo(() => {
+    // Elegimos la "mejor" reserva por slot: confirmed gana; si no, cancelled.
+    const map = new Map<string, Reservation>();
+    for (const r of reservations) {
+      const key = `${r.courtId}_${r.startHour}`;
+      const prev = map.get(key);
+      if (!prev) {
+        map.set(key, r);
+        continue;
+      }
+      const prevScore = prev.status === "confirmed" ? 2 : prev.status === "cancelled" ? 1 : 0;
+      const curScore = r.status === "confirmed" ? 2 : r.status === "cancelled" ? 1 : 0;
+      if (curScore > prevScore) map.set(key, r);
+    }
+    return map;
+  }, [reservations]);
 
   async function login() {
-    setLoginError(null);
+    setAuthError("");
+    setActionMsg("");
     try {
       const res = await fetch("/api/admin/login", {
         method: "POST",
@@ -171,42 +150,81 @@ export default function AdminPage() {
         body: JSON.stringify({ pin }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || `Login failed (${res.status})`);
+      if (!res.ok) {
+        setAuthError(data?.error || `Error (${res.status})`);
+        return;
+      }
       setToken(data.token);
     } catch (e: any) {
-      setLoginError(e?.message || "Error");
+      setAuthError(e?.message || "Error de red");
     }
   }
 
-  async function fetchReservations() {
+  async function loadReservations() {
+    setFetchError("");
+    setActionMsg("");
     if (!token) return;
+
     setLoading(true);
-    setErr(null);
     try {
-      const url =
-        `/api/admin/reservations?venueId=${encodeURIComponent(VENUE_ID)}` +
-        `&date=${encodeURIComponent(date)}` +
-        (includeCancelled ? `&includeCancelled=1` : "");
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch(
+        `/api/admin/reservations?venueId=${encodeURIComponent(VENUE_ID)}&date=${encodeURIComponent(
+          date
+        )}&includeCancelled=1`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
       const data = await res.json();
-      if (!res.ok)
-        throw new Error(
-          `No se pudo traer reservas (${res.status}). ${JSON.stringify(data)}`
-        );
-      setReservations(Array.isArray(data.reservations) ? data.reservations : []);
+      if (!res.ok) {
+        setFetchError(`❌ No se pudo traer reservas (${res.status}). ${JSON.stringify(data)}`);
+        setReservations([]);
+        return;
+      }
+
+      setReservations((data.reservations || []) as Reservation[]);
     } catch (e: any) {
-      setErr(e?.message || "Error");
+      setFetchError(`❌ Error de red: ${e?.message || "error"}`);
       setReservations([]);
     } finally {
       setLoading(false);
     }
   }
 
-  async function cancelReservation(r: Reservation) {
-    if (!token) return;
-    setCancelBusyId(r.id);
+  useEffect(() => {
+    if (token) loadReservations();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, date]);
+
+  function openSlot(courtId: CourtId, hour: number) {
+    setActionMsg("");
+    setModalCourt(courtId);
+    setModalHour(hour);
+    setIsModalOpen(true);
+
+    // limpiar form "crear"
+    setCreateName("");
+    setCreatePhone("");
+    setCreateNotes("");
+    setCreateDuration(60);
+  }
+
+  function closeModal() {
+    setIsModalOpen(false);
+    setModalCourt(null);
+    setModalHour(null);
+  }
+
+  const selectedReservation = useMemo(() => {
+    if (!modalCourt || modalHour == null) return null;
+    return reservationByCourtHour.get(`${modalCourt}_${modalHour}`) || null;
+  }, [modalCourt, modalHour, reservationByCourtHour]);
+
+  async function cancelReservation(resId: string) {
+    setActionMsg("");
+    if (!token) return setActionMsg("✖ Falta token admin");
+
     try {
       const res = await fetch("/api/admin/reservations/cancel", {
         method: "POST",
@@ -214,267 +232,520 @@ export default function AdminPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ id: r.id, venueId: r.venueId || VENUE_ID }),
+        body: JSON.stringify({ venueId: VENUE_ID, id: resId }),
       });
+
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || `Cancel failed (${res.status})`);
+      if (!res.ok) {
+        setActionMsg(`✖ ${data?.error || `Error (${res.status})`}`);
+        return;
+      }
 
-      // refrescar lista
-      await fetchReservations();
-
-      // si justo estaba abierto el modal de esa reserva, cerralo
-      setSelected((prev) => (prev?.id === r.id ? null : prev));
+      setActionMsg("✅ Reserva cancelada");
+      await loadReservations();
     } catch (e: any) {
-      alert(`✖ ${e?.message || "Error"}`);
-    } finally {
-      setCancelBusyId(null);
+      setActionMsg(`✖ ${e?.message || "Error de red"}`);
     }
   }
 
-  useEffect(() => {
-    if (!token) return;
-    fetchReservations();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, date, includeCancelled]);
+  async function createReservationFromModal() {
+    setActionMsg("");
+    if (!modalCourt || modalHour == null) return;
 
-  const sorted = useMemo(() => {
-    return [...reservations].sort((a, b) => {
-      const aa = (a.startHour ?? 0) - (b.startHour ?? 0);
-      if (aa !== 0) return aa;
-      return String(a.courtId).localeCompare(String(b.courtId));
-    });
-  }, [reservations]);
+    const customerName = createName.trim();
+    const customerPhone = createPhone.trim();
+    if (!customerName || !customerPhone) {
+      setActionMsg("✖ Completá nombre y teléfono");
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/reservations/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          venueId: VENUE_ID,
+          courtId: modalCourt,
+          date,
+          startHour: modalHour,
+          durationMin: createDuration, // podés dejar 60 fijo si querés
+          customerName,
+          customerPhone,
+          notes: createNotes || "",
+          source: "admin",
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setActionMsg(`✖ ${data?.error || `Error (${res.status})`}`);
+        return;
+      }
+
+      setActionMsg("✅ Reserva creada");
+      await loadReservations();
+    } catch (e: any) {
+      setActionMsg(`✖ ${e?.message || "Error de red"}`);
+    }
+  }
+
+  const headerGradient =
+    "bg-gradient-to-r from-emerald-900 via-emerald-800 to-lime-800";
+  const cardBg = "bg-black/40 backdrop-blur border border-white/10";
+  const pageBg =
+    "min-h-screen bg-[radial-gradient(circle_at_top,rgba(16,185,129,0.25),transparent_55%),radial-gradient(circle_at_bottom,rgba(132,204,22,0.20),transparent_55%),linear-gradient(180deg,#0b1220, #050914)]";
 
   return (
-    <div className="min-h-screen text-white" style={bg}>
-      <div className="mx-auto max-w-6xl px-4 py-8">
-        <header className="flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-3">
-            <div className="text-2xl">🎾</div>
+    <div className={pageBg}>
+      <div className="mx-auto max-w-6xl px-4 py-6">
+        {/* Header */}
+        <div className={classNames("rounded-2xl p-5 shadow-xl", headerGradient)}>
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
             <div>
-              <div className="text-2xl font-extrabold tracking-tight">Souler</div>
-              <div className="text-white/70 text-sm">Panel Administrador</div>
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">🎾</span>
+                <h1 className="text-2xl font-extrabold tracking-tight text-white">
+                  Souler — Panel Admin
+                </h1>
+              </div>
+              <p className="text-white/80 text-sm">
+                Tocá cualquier horario para ver detalles (y WhatsApp).
+              </p>
             </div>
-          </div>
 
-          {token ? (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col md:flex-row gap-3 md:items-center">
+              <div className={classNames("rounded-xl px-3 py-2", cardBg)}>
+                <label className="text-xs text-white/70">Fecha</label>
+                <input
+                  type="date"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-white outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-lime-300"
+                />
+              </div>
+
               <button
-                onClick={() => {
-                  setToken(null);
-                  setPin("");
-                }}
-                className="rounded-xl bg-white/10 hover:bg-white/15 px-4 py-2 text-sm"
+                onClick={() => loadReservations()}
+                disabled={!token || loading}
+                className="rounded-xl bg-white text-emerald-950 font-bold px-4 py-3 shadow hover:opacity-90 disabled:opacity-60"
               >
-                Salir
+                {loading ? "Actualizando..." : "Actualizar agenda"}
               </button>
             </div>
-          ) : null}
-        </header>
+          </div>
+        </div>
 
-        {!token ? (
-          <div className="mt-8 max-w-md rounded-2xl bg-white/10 ring-1 ring-white/15 p-5">
-            <div className="font-semibold">Ingresar</div>
-            <div className="text-white/70 text-sm mt-1">
-              Escribí tu PIN de administrador
-            </div>
-            <div className="mt-4 flex gap-2">
-              <input
-                value={pin}
-                onChange={(e) => setPin(e.target.value)}
-                placeholder="PIN"
-                className="w-full rounded-xl bg-black/40 ring-1 ring-white/15 px-4 py-2 outline-none focus:ring-white/30"
-              />
+        {/* Auth */}
+        {!token && (
+          <div className={classNames("mt-5 rounded-2xl p-5", cardBg)}>
+            <h2 className="text-white font-bold text-lg">Ingresar</h2>
+            <p className="text-white/70 text-sm">
+              Ingresá el PIN para habilitar el panel.
+            </p>
+
+            <div className="mt-4 flex flex-col sm:flex-row gap-3 sm:items-end">
+              <div className="flex-1">
+                <label className="text-xs text-white/70">PIN</label>
+                <input
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-white outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-lime-300"
+                  placeholder="Ej: 2505"
+                />
+              </div>
               <button
                 onClick={login}
-                className="rounded-xl bg-emerald-500/80 hover:bg-emerald-500 px-4 py-2 font-semibold"
+                className="rounded-xl bg-lime-400 text-emerald-950 font-extrabold px-5 py-3 shadow hover:brightness-95"
               >
                 Entrar
               </button>
+              <button
+                onClick={() => {
+                  localStorage.removeItem("souler_admin_token");
+                  setToken("");
+                  setPin("");
+                }}
+                className="rounded-xl bg-white/10 text-white font-semibold px-5 py-3 ring-1 ring-white/10 hover:bg-white/15"
+              >
+                Limpiar
+              </button>
             </div>
-            {loginError ? (
-              <div className="mt-3 text-sm text-rose-300">✖ {loginError}</div>
-            ) : null}
+
+            {authError && (
+              <div className="mt-3 text-red-200 bg-red-500/20 ring-1 ring-red-400/30 rounded-xl px-3 py-2">
+                {authError}
+              </div>
+            )}
           </div>
-        ) : (
-          <>
-            <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="rounded-2xl bg-white/10 ring-1 ring-white/15 p-5">
-                <div className="font-semibold">Fecha</div>
-                <div className="mt-3 flex items-center gap-3">
-                  <input
-                    type="date"
-                    value={date}
-                    onChange={(e) => setDate(e.target.value)}
-                    className="rounded-xl bg-black/40 ring-1 ring-white/15 px-4 py-2 outline-none focus:ring-white/30"
-                  />
-                  <button
-                    onClick={fetchReservations}
-                    className="rounded-xl bg-white/10 hover:bg-white/15 px-4 py-2 text-sm"
-                    disabled={loading}
-                  >
-                    {loading ? "Actualizando..." : "Actualizar"}
-                  </button>
-                </div>
+        )}
 
-                <label className="mt-4 flex items-center gap-2 text-sm text-white/80 select-none">
-                  <input
-                    type="checkbox"
-                    checked={includeCancelled}
-                    onChange={(e) => setIncludeCancelled(e.target.checked)}
-                  />
-                  Mostrar canceladas
-                </label>
+        {/* Errors */}
+        {fetchError && (
+          <div className="mt-5 text-red-200 bg-red-500/20 ring-1 ring-red-400/30 rounded-2xl px-4 py-3">
+            {fetchError}
+          </div>
+        )}
 
-                {err ? (
-                  <div className="mt-3 text-sm text-rose-300">{err}</div>
-                ) : null}
+        {/* Grid */}
+        {token && (
+          <div className="mt-5 rounded-2xl p-5 shadow-xl bg-white/5 ring-1 ring-white/10 backdrop-blur">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+              <h2 className="text-white font-extrabold text-lg">
+                Canchas y horarios
+              </h2>
+              <div className="text-white/70 text-sm">
+                Se muestran <b>todos</b> los horarios del día (disponibles u ocupados).
               </div>
+            </div>
 
-              <div className="rounded-2xl bg-white/10 ring-1 ring-white/15 p-5 md:col-span-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-semibold">Reservas</div>
-                    <div className="text-white/70 text-sm">
-                      Tocá una reserva para ver el detalle completo
+            <div className="mt-4 overflow-x-auto">
+              <div className="min-w-[900px]">
+                {/* Header row */}
+                <div className="grid" style={{ gridTemplateColumns: `160px repeat(${hours.length}, minmax(60px, 1fr))` }}>
+                  <div className="sticky left-0 z-10 rounded-l-xl bg-white/10 px-3 py-3 text-white/80 text-sm font-semibold ring-1 ring-white/10">
+                    Canchas
+                  </div>
+                  {hours.map((h) => (
+                    <div
+                      key={h}
+                      className="bg-white/10 px-2 py-3 text-center text-white/70 text-xs font-semibold ring-1 ring-white/10"
+                    >
+                      {pad2(h)}:00
                     </div>
-                  </div>
-                  <div className="text-sm text-white/70">
-                    {sorted.length} turno{sorted.length === 1 ? "" : "s"}
-                  </div>
+                  ))}
                 </div>
 
-                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {sorted.map((r) => (
-                    <button
-                      key={r.id}
-                      onClick={() => setSelected(r)}
-                      className={`text-left rounded-2xl p-4 transition ${cardByStatus(
-                        r.status
-                      )}`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="font-bold">
-                          {formatRange(r.startHour, r.durationMin)}
+                {/* Rows */}
+                <div className="mt-2 space-y-2">
+                  {COURTS.map((c) => {
+                    const kindBadge =
+                      c.kind === "doble"
+                        ? "bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-400/30"
+                        : "bg-indigo-500/20 text-indigo-200 ring-1 ring-indigo-400/30";
+
+                    return (
+                      <div
+                        key={c.id}
+                        className="grid"
+                        style={{ gridTemplateColumns: `160px repeat(${hours.length}, minmax(60px, 1fr))` }}
+                      >
+                        <div className={classNames("sticky left-0 z-10 rounded-xl px-3 py-3 text-white ring-1 ring-white/10", cardBg)}>
+                          <div className="text-sm font-extrabold">{c.label}</div>
+                          <div className={classNames("mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold", kindBadge)}>
+                            {c.kind.toUpperCase()}
+                          </div>
                         </div>
-                        <span
-                          className={`px-2 py-1 rounded-full text-xs ${courtPillClass(
-                            r.courtId
-                          )}`}
-                        >
-                          {courtLabel(r.courtId)}
-                        </span>
+
+                        {hours.map((h) => {
+                          const r = reservationByCourtHour.get(`${c.id}_${h}`);
+
+                          const isConfirmed = r?.status === "confirmed";
+                          const isCancelled = r?.status === "cancelled";
+
+                          // Colores deportivos
+                          const base =
+                            c.kind === "doble"
+                              ? "bg-emerald-400/10 hover:bg-emerald-400/15 ring-emerald-300/20"
+                              : "bg-indigo-400/10 hover:bg-indigo-400/15 ring-indigo-300/20";
+
+                          const occupied =
+                            isConfirmed
+                              ? "bg-red-500/25 hover:bg-red-500/30 ring-red-300/30"
+                              : isCancelled
+                              ? "bg-white/5 hover:bg-white/10 ring-white/10"
+                              : base;
+
+                          const text =
+                            isConfirmed
+                              ? "text-red-50"
+                              : isCancelled
+                              ? "text-white/60"
+                              : "text-white/85";
+
+                          return (
+                            <button
+                              key={h}
+                              onClick={() => openSlot(c.id, h)}
+                              className={classNames(
+                                "ring-1 px-2 py-3 text-center text-xs font-bold transition rounded-lg",
+                                occupied,
+                                text
+                              )}
+                              title="Tocar para ver detalles"
+                            >
+                              {isConfirmed ? "OCUP." : isCancelled ? "CANC." : "LIBRE"}
+                            </button>
+                          );
+                        })}
                       </div>
-
-                      <div className="mt-2 text-sm text-white/80">
-                        <div className="font-semibold">{r.customerName}</div>
-                        <div className="text-white/60">{r.customerPhone}</div>
-                      </div>
-
-                      <div className="mt-3 flex items-center justify-between">
-                        <span className="text-xs text-white/60">
-                          {r.status === "cancelled" ? "Cancelada" : "Confirmada"}
-                        </span>
-
-                        {r.status !== "cancelled" ? (
-                          <span className="text-xs text-white/70">
-                            Click para detalles →
-                          </span>
-                        ) : (
-                          <span className="text-xs text-white/50">
-                            Click para ver →
-                          </span>
-                        )}
-                      </div>
-                    </button>
-                  ))}
-
-                  {sorted.length === 0 ? (
-                    <div className="col-span-full text-white/70 text-sm">
-                      No hay reservas para esta fecha.
-                    </div>
-                  ) : null}
+                    );
+                  })}
                 </div>
               </div>
             </div>
 
-            {/* MODAL */}
-            <Modal
-              open={!!selected}
-              onClose={() => setSelected(null)}
-              title={selected ? `Reserva ${selected.id}` : "Reserva"}
-            >
-              {selected ? (
-                <div className="space-y-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span
-                      className={`px-2 py-1 rounded-full text-xs ${courtPillClass(
-                        selected.courtId
-                      )}`}
-                    >
-                      {courtLabel(selected.courtId)}
-                    </span>
-                    <span className="text-white/80 text-sm">
-                      {selected.date} • {formatRange(selected.startHour, selected.durationMin)}
-                    </span>
-                    <span className="text-white/60 text-xs">
-                      ({selected.durationMin} min)
-                    </span>
-                    <span className="ml-auto text-xs text-white/60">
-                      Estado:{" "}
-                      <span className="text-white">
-                        {selected.status === "cancelled" ? "cancelled" : "confirmed"}
-                      </span>
-                    </span>
-                  </div>
-
-                  <div className="rounded-xl bg-white/5 ring-1 ring-white/10 p-4">
-                    <div className="text-sm text-white/60">Cliente</div>
-                    <div className="mt-1 text-lg font-bold">{selected.customerName}</div>
-
-                    <div className="mt-3 text-sm text-white/60">Teléfono</div>
-                    <a
-                      href={whatsappLink(selected.customerPhone)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-1 inline-flex items-center gap-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 ring-1 ring-emerald-400/30 px-3 py-2"
-                      onClick={(e) => e.stopPropagation()}
-                      title="Abrir WhatsApp"
-                    >
-                      <span className="text-lg">💬</span>
-                      <span className="font-semibold">{selected.customerPhone}</span>
-                      <span className="text-xs text-white/70">(WhatsApp)</span>
-                    </a>
-
-                    <div className="mt-3 text-sm text-white/60">Notas</div>
-                    <div className="mt-1 text-white/90 whitespace-pre-wrap">
-                      {selected.notes?.trim() ? selected.notes : "—"}
-                    </div>
-
-                    <div className="mt-3 text-xs text-white/60">
-                      Fuente: <span className="text-white">{selected.source || "web"}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-end gap-2">
-                    {selected.status !== "cancelled" ? (
-                      <button
-                        onClick={() => cancelReservation(selected)}
-                        disabled={cancelBusyId === selected.id}
-                        className="rounded-xl bg-rose-500/80 hover:bg-rose-500 px-4 py-2 font-semibold disabled:opacity-60"
-                      >
-                        {cancelBusyId === selected.id ? "Cancelando..." : "Cancelar turno"}
-                      </button>
-                    ) : (
-                      <div className="text-sm text-white/60">Esta reserva ya está cancelada.</div>
-                    )}
-                  </div>
-                </div>
-              ) : null}
-            </Modal>
-          </>
+            <div className="mt-4 text-white/70 text-sm">
+              Tip: “OCUP.” = confirmada, “CANC.” = cancelada, “LIBRE” = disponible.
+            </div>
+          </div>
         )}
       </div>
+
+      {/* Modal */}
+      {isModalOpen && modalCourt && modalHour != null && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/70"
+            onClick={closeModal}
+          />
+          <div className="relative w-full max-w-lg rounded-2xl bg-[#0b1220] ring-1 ring-white/10 shadow-2xl overflow-hidden">
+            <div className="p-5 bg-gradient-to-r from-emerald-900 via-emerald-800 to-lime-800">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-white/90 text-sm font-semibold">
+                    {date} — {pad2(modalHour)}:00
+                  </div>
+                  <div className="text-white text-xl font-extrabold">
+                    {COURTS.find((c) => c.id === modalCourt)?.label || modalCourt}
+                  </div>
+                </div>
+                <button
+                  onClick={closeModal}
+                  className="rounded-xl bg-black/30 text-white px-3 py-2 ring-1 ring-white/10 hover:bg-black/40"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="p-5">
+              {selectedReservation && selectedReservation.status === "confirmed" ? (
+                <>
+                  <div className="rounded-xl bg-white/5 ring-1 ring-white/10 p-4">
+                    <div className="text-white font-extrabold text-lg">Reserva confirmada</div>
+                    <div className="mt-2 text-white/85 text-sm">
+                      <div className="flex justify-between gap-3">
+                        <span className="text-white/60">Nombre</span>
+                        <span className="font-semibold">{selectedReservation.customerName}</span>
+                      </div>
+
+                      <div className="flex justify-between gap-3 mt-1">
+                        <span className="text-white/60">Teléfono</span>
+                        <a
+                          href={toWhatsAppLink(selectedReservation.customerPhone)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-extrabold text-lime-300 hover:underline"
+                          title="Abrir WhatsApp"
+                        >
+                          {selectedReservation.customerPhone}
+                        </a>
+                      </div>
+
+                      <div className="flex justify-between gap-3 mt-1">
+                        <span className="text-white/60">Duración</span>
+                        <span className="font-semibold">{selectedReservation.durationMin} min</span>
+                      </div>
+
+                      <div className="flex justify-between gap-3 mt-1">
+                        <span className="text-white/60">Origen</span>
+                        <span className="font-semibold">{selectedReservation.source || "-"}</span>
+                      </div>
+
+                      {selectedReservation.notes ? (
+                        <div className="mt-3">
+                          <div className="text-white/60 text-xs">Notas</div>
+                          <div className="text-white/90 text-sm whitespace-pre-wrap">
+                            {selectedReservation.notes}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-col sm:flex-row gap-3">
+                    <a
+                      href={toWhatsAppLink(selectedReservation.customerPhone)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex-1 rounded-xl bg-lime-400 text-emerald-950 font-extrabold px-4 py-3 text-center hover:brightness-95"
+                    >
+                      WhatsApp
+                    </a>
+                    <button
+                      onClick={() => cancelReservation(selectedReservation.id)}
+                      className="flex-1 rounded-xl bg-red-500/90 text-white font-extrabold px-4 py-3 hover:bg-red-500"
+                    >
+                      Cancelar turno
+                    </button>
+                  </div>
+                </>
+              ) : selectedReservation && selectedReservation.status === "cancelled" ? (
+                <>
+                  <div className="rounded-xl bg-white/5 ring-1 ring-white/10 p-4">
+                    <div className="text-white font-extrabold text-lg">Reserva cancelada</div>
+                    <div className="mt-2 text-white/80 text-sm">
+                      <div className="flex justify-between gap-3">
+                        <span className="text-white/60">Nombre</span>
+                        <span className="font-semibold">{selectedReservation.customerName}</span>
+                      </div>
+                      <div className="flex justify-between gap-3 mt-1">
+                        <span className="text-white/60">Teléfono</span>
+                        <a
+                          href={toWhatsAppLink(selectedReservation.customerPhone)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-extrabold text-lime-300 hover:underline"
+                          title="Abrir WhatsApp"
+                        >
+                          {selectedReservation.customerPhone}
+                        </a>
+                      </div>
+                      <div className="flex justify-between gap-3 mt-1">
+                        <span className="text-white/60">Duración</span>
+                        <span className="font-semibold">{selectedReservation.durationMin} min</span>
+                      </div>
+                      {selectedReservation.notes ? (
+                        <div className="mt-3">
+                          <div className="text-white/60 text-xs">Notas</div>
+                          <div className="text-white/90 text-sm whitespace-pre-wrap">
+                            {selectedReservation.notes}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="text-white/70 text-sm">
+                      Este horario está libre (la reserva está cancelada). Si querés, podés crear otra.
+                    </div>
+                  </div>
+
+                  {/* Crear (opcional) */}
+                  <div className="mt-4 rounded-xl bg-white/5 ring-1 ring-white/10 p-4">
+                    <div className="text-white font-extrabold">Crear nueva reserva</div>
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs text-white/60">Nombre</label>
+                        <input
+                          value={createName}
+                          onChange={(e) => setCreateName(e.target.value)}
+                          className="mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-white outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-lime-300"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-white/60">Teléfono</label>
+                        <input
+                          value={createPhone}
+                          onChange={(e) => setCreatePhone(e.target.value)}
+                          className="mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-white outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-lime-300"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="text-xs text-white/60">Notas</label>
+                        <input
+                          value={createNotes}
+                          onChange={(e) => setCreateNotes(e.target.value)}
+                          className="mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-white outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-lime-300"
+                        />
+                      </div>
+
+                      <div className="sm:col-span-2">
+                        <label className="text-xs text-white/60">Duración</label>
+                        <select
+                          value={createDuration}
+                          onChange={(e) => setCreateDuration(Number(e.target.value) as DurationMin)}
+                          className="mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-white outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-lime-300"
+                        >
+                          <option value={60}>60 min</option>
+                          <option value={120}>120 min</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={createReservationFromModal}
+                      className="mt-4 w-full rounded-xl bg-lime-400 text-emerald-950 font-extrabold px-4 py-3 hover:brightness-95"
+                    >
+                      Crear reserva
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="rounded-xl bg-white/5 ring-1 ring-white/10 p-4">
+                    <div className="text-white font-extrabold text-lg">Disponible</div>
+                    <div className="text-white/70 text-sm mt-1">
+                      Este horario no tiene reserva confirmada.
+                    </div>
+                  </div>
+
+                  {/* Crear (opcional) */}
+                  <div className="mt-4 rounded-xl bg-white/5 ring-1 ring-white/10 p-4">
+                    <div className="text-white font-extrabold">Crear reserva</div>
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs text-white/60">Nombre</label>
+                        <input
+                          value={createName}
+                          onChange={(e) => setCreateName(e.target.value)}
+                          className="mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-white outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-lime-300"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-white/60">Teléfono</label>
+                        <input
+                          value={createPhone}
+                          onChange={(e) => setCreatePhone(e.target.value)}
+                          className="mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-white outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-lime-300"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="text-xs text-white/60">Notas</label>
+                        <input
+                          value={createNotes}
+                          onChange={(e) => setCreateNotes(e.target.value)}
+                          className="mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-white outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-lime-300"
+                        />
+                      </div>
+
+                      <div className="sm:col-span-2">
+                        <label className="text-xs text-white/60">Duración</label>
+                        <select
+                          value={createDuration}
+                          onChange={(e) => setCreateDuration(Number(e.target.value) as DurationMin)}
+                          className="mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-white outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-lime-300"
+                        >
+                          <option value={60}>60 min</option>
+                          <option value={120}>120 min</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={createReservationFromModal}
+                      className="mt-4 w-full rounded-xl bg-lime-400 text-emerald-950 font-extrabold px-4 py-3 hover:brightness-95"
+                    >
+                      Crear reserva
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {actionMsg && (
+                <div className="mt-4 rounded-xl bg-white/5 ring-1 ring-white/10 px-4 py-3 text-white">
+                  {actionMsg}
+                </div>
+              )}
+
+              <div className="mt-5 text-white/50 text-xs">
+                Tip: tocá el teléfono para abrir WhatsApp. (Si no abre, revisá que sea número con dígitos).
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
